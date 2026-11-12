@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import WorkspaceLayout from '../components/WorkspaceLayout';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
@@ -10,6 +11,7 @@ export default function InvoicesPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(true);
+  const [downloadingId, setDownloadingId] = useState(null);
 
   const loadInvoices = useCallback(async () => {
     setLoading(true);
@@ -57,6 +59,36 @@ export default function InvoicesPage() {
     }
   };
 
+  const downloadPdf = async (invoice) => {
+    setError('');
+    setSuccess('');
+    setDownloadingId(invoice.id);
+    try {
+      const { data } = await api.get(`/invoices/${invoice.id}/pdf`, { responseType: 'blob' });
+      const url = URL.createObjectURL(data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${String(invoice.invoiceNumber).replace(/[^a-zA-Z0-9._-]/g, '_')}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setSuccess(`Downloaded ${invoice.invoiceNumber}.`);
+    } catch (requestError) {
+      let message = requestError.response?.data?.message;
+      if (!message && requestError.response?.data instanceof Blob) {
+        try {
+          message = JSON.parse(await requestError.response.data.text()).message;
+        } catch {
+          message = null;
+        }
+      }
+      setError(message || 'Could not download invoice PDF.');
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
   return (
     <WorkspaceLayout title="Invoices and payments">
       {error && <div className="alert error" role="alert">{error}</div>}
@@ -69,7 +101,12 @@ export default function InvoicesPage() {
               <article className="workflow-card" key={invoice.id}>
                 <div className="section-title"><div><h3>{invoice.invoiceNumber}</h3><span>Order #{invoice.orderId} · {new Date(invoice.createdAt).toLocaleDateString()}</span></div><span className="status-pill">{invoice.status}</span></div>
                 <p><strong>{invoice.currency} {Number(invoice.amount).toFixed(2)}</strong></p>
-                <button className="secondary-btn" onClick={() => showDetails(invoice.id)}>View invoice</button>
+                <div className="button-row">
+                  <button className="secondary-btn" onClick={() => showDetails(invoice.id)}>View invoice</button>
+                  <button className="secondary-btn" disabled={downloadingId === invoice.id} onClick={() => downloadPdf(invoice)}>
+                    {downloadingId === invoice.id ? 'Preparing PDF…' : 'Download PDF'}
+                  </button>
+                </div>
               </article>
             ))}
           </div>
@@ -77,11 +114,15 @@ export default function InvoicesPage() {
       </section>
       {details && (
         <section className="panel invoice-detail">
-          <div className="section-title"><h2>{details.invoiceNumber}</h2><button className="text-button" onClick={() => setDetails(null)}>Close</button></div>
+          <div className="section-title"><h2>{details.invoiceNumber}</h2><div className="button-row">
+            <button className="secondary-btn" disabled={downloadingId === details.id} onClick={() => downloadPdf(details)}>Download PDF</button>
+            <button className="text-button" onClick={() => setDetails(null)}>Close</button>
+          </div></div>
           <p>{details.currency} {Number(details.amount).toFixed(2)} · {details.status}</p>
           <ul className="compact-list">{details.items.map((item) => <li key={item.id}>{item.name}: {item.quantity} {item.unit} × {details.currency} {Number(item.unitPrice).toFixed(2)} = {details.currency} {Number(item.lineTotal).toFixed(2)}</li>)}</ul>
           <h3>Payment records</h3>
           {details.payments.length ? <ul className="compact-list">{details.payments.map((payment) => <li key={payment.id}>{payment.status}: {details.currency} {Number(payment.amount).toFixed(2)} · {new Date(payment.createdAt).toLocaleString()}</li>)}</ul> : <p>No payments recorded.</p>}
+          <p><Link className="text-button" to="/refunds">View refund records associated with this invoice</Link></p>
           {user?.role === 'BUYER' && !['PAID', 'VOID'].includes(details.status) && (
             <div className="alert info">
               <p>This records a payment marked as paid for development workflow testing; no payment provider or bank transfer is connected.</p>

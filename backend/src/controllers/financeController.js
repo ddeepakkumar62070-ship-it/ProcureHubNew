@@ -1,5 +1,6 @@
 const financeRepository = require('../repositories/financeRepository');
 const { parsePagination } = require('../utils/pagination');
+const { renderInvoicePdf } = require('../utils/invoicePdf');
 
 async function listInvoices(req, res, next) {
   try {
@@ -19,6 +20,24 @@ async function getInvoice(req, res, next) {
     const invoice = await financeRepository.getInvoice(req.params.id, { userId: req.user.id, role: req.user.role });
     if (!invoice) return res.status(404).json({ message: 'Invoice not found.' });
     return res.json({ invoice });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function downloadInvoicePdf(req, res, next) {
+  try {
+    const invoice = await financeRepository.getInvoice(req.params.id, { userId: req.user.id, role: req.user.role });
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found.' });
+    const pdf = await renderInvoicePdf(invoice);
+    const filename = `${String(invoice.invoiceNumber).replace(/[^a-zA-Z0-9._-]/g, '_')}.pdf`;
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': pdf.length,
+      'Cache-Control': 'private, no-store',
+    });
+    return res.send(pdf);
   } catch (error) {
     return next(error);
   }
@@ -57,4 +76,4 @@ async function createPayment(req, res, next) {
   }
 }
 
-module.exports = { createPayment, getInvoice, listInvoices };
+module.exports = { createPayment, downloadInvoicePdf, getInvoice, listInvoices };

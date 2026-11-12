@@ -16,19 +16,31 @@ const isValidEmail = (email) => typeof email === 'string'
   && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 const registerUser = async (req, res, next) => {
-  const { name, email, password, role, businessName } = req.body;
-
-  if (typeof name !== 'string' || !name.trim() || name.trim().length > 150
-      || !isValidEmail(email) || typeof password !== 'string'
-      || Buffer.byteLength(password, 'utf8') < 8 || Buffer.byteLength(password, 'utf8') > 72
-      || (businessName !== undefined && (typeof businessName !== 'string'
-        || !businessName.trim() || businessName.trim().length > 200))) {
-    return res.status(400).json({
-      message: 'Provide a name up to 150 characters, a valid email, a password of 8 to 72 bytes, and an optional business name up to 200 characters.',
-    });
+  const { name, email, password, role, businessName } = req.body || {};
+  const errors = {};
+  if (typeof name !== 'string' || !name.trim()) errors.name = 'Full name is required.';
+  else if (name.trim().length > 150) errors.name = 'Full name must be 150 characters or fewer.';
+  if (typeof email !== 'string' || !email.trim()) errors.email = 'Email is required.';
+  else if (!isValidEmail(email.trim())) errors.email = 'Enter a valid email address.';
+  if (typeof password !== 'string' || !password) errors.password = 'Password is required.';
+  else if (Buffer.byteLength(password, 'utf8') < 8 || Buffer.byteLength(password, 'utf8') > 72) {
+    errors.password = 'Password must be between 8 and 72 bytes.';
+  }
+  if (businessName !== undefined && businessName !== '') {
+    if (typeof businessName !== 'string' || !businessName.trim()) {
+      errors.businessName = 'Business name must not be blank.';
+    } else if (businessName.trim().length > 200) {
+      errors.businessName = 'Business name must be 200 characters or fewer.';
+    }
+  }
+  if (Object.keys(errors).length) {
+    return res.status(400).json({ message: 'Please correct the highlighted fields.', errors });
   }
   if (!['BUYER', 'SUPPLIER'].includes(role)) {
-    return res.status(400).json({ message: 'Public registration is limited to BUYER and SUPPLIER accounts.' });
+    return res.status(400).json({
+      message: 'Please correct the highlighted fields.',
+      errors: { role: 'Choose Buyer or Supplier.' },
+    });
   }
 
   try {
@@ -48,17 +60,24 @@ const registerUser = async (req, res, next) => {
     });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ message: 'User already exists.' });
+      return res.status(409).json({
+        message: 'An account with this email already exists.',
+        errors: { email: 'An account with this email already exists.' },
+      });
     }
     return next(error);
   }
 };
 
 const loginUser = async (req, res, next) => {
-  const { email, password } = req.body;
-  if (!isValidEmail(email) || typeof password !== 'string' || !password
-      || Buffer.byteLength(password, 'utf8') > 72) {
-    return res.status(400).json({ message: 'A valid email and password are required.' });
+  const { email, password } = req.body || {};
+  const errors = {};
+  if (typeof email !== 'string' || !email.trim()) errors.email = 'Email is required.';
+  else if (!isValidEmail(email.trim())) errors.email = 'Enter a valid email address.';
+  if (typeof password !== 'string' || !password) errors.password = 'Password is required.';
+  else if (Buffer.byteLength(password, 'utf8') > 72) errors.password = 'Invalid email or password.';
+  if (Object.keys(errors).length) {
+    return res.status(400).json({ message: 'Please enter a valid email and password.', errors });
   }
 
   try {

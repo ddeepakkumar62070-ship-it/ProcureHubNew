@@ -183,6 +183,7 @@ export default function RequestsPage() {
                 {isBuyer ? (
                   <div className="quote-list">
                     <h4>Quotations</h4>
+                    {request.status !== 'OPEN' && <p className="alert info">This request is {request.status.toLowerCase()}; quotation decisions are closed.</p>}
                     {quotations.filter((quote) => Number(quote.requestId) === Number(request.id)).length === 0
                       ? <p>No quotations received yet.</p>
                       : quotations.filter((quote) => Number(quote.requestId) === Number(request.id)).map((quote) => (
@@ -191,11 +192,11 @@ export default function RequestsPage() {
                           <p>Total: {quote.currency} {Number(quote.amount).toFixed(2)}{quote.deliveryDays !== null ? ` · ${quote.deliveryDays} delivery days` : ''}</p>
                           {quote.message && <p>{quote.message}</p>}
                           <ul className="compact-list">{quote.items.map((item) => <li key={item.id}>{item.name}: {item.quantity} × {quote.currency} {Number(item.unitPrice).toFixed(2)}</li>)}</ul>
-                          {quote.status === 'PENDING' && <div className="button-row">
+                          {request.status === 'OPEN' && quote.status === 'PENDING' && <div className="button-row">
                             <button className="primary-btn" onClick={() => updateQuotation(quote.id, 'ACCEPTED')}>Accept</button>
                             <button className="secondary-btn" onClick={() => updateQuotation(quote.id, 'REJECTED')}>Reject</button>
                           </div>}
-                          {quote.status === 'ACCEPTED' && <button className="primary-btn" onClick={() => createOrder(quote.id)}>Create purchase order</button>}
+                          {request.status === 'OPEN' && quote.status === 'ACCEPTED' && <button className="primary-btn" onClick={() => createOrder(quote.id)}>Create purchase order</button>}
                         </div>
                       ))}
                   </div>
@@ -203,6 +204,8 @@ export default function RequestsPage() {
                   const submittedQuote = quotations.find((quote) => Number(quote.requestId) === Number(request.id));
                   return submittedQuote
                     ? <p className="alert info">You submitted a quotation for this request. Current status: <strong>{submittedQuote.status}</strong> · {submittedQuote.currency} {Number(submittedQuote.amount).toFixed(2)}.</p>
+                    : request.status !== 'OPEN'
+                      ? <p className="alert info">This request is {request.status.toLowerCase()} and is no longer accepting quotations.</p>
                     : <SupplierQuoteForm
                       request={request}
                       values={quoteFields[request.id] || {}}

@@ -13,8 +13,15 @@ async function invoiceAccess(invoiceId, { userId, role }) {
   const [rows] = await getPool().execute(
     `SELECT i.id, i.purchase_order_id AS orderId, i.invoice_number AS invoiceNumber,
             i.amount, i.currency, i.status, i.due_at AS dueAt, i.created_at AS createdAt,
-            po.buyer_id AS buyerId, po.supplier_id AS supplierId
+            po.buyer_id AS buyerId, po.supplier_id AS supplierId,
+            bu.name AS buyerName, bu.email AS buyerEmail, bb.name AS buyerBusinessName,
+            bb.address AS buyerAddress, su.name AS supplierName, su.email AS supplierEmail,
+            sb.name AS supplierBusinessName, sb.address AS supplierAddress
      FROM invoices i JOIN purchase_orders po ON po.id = i.purchase_order_id
+     JOIN users bu ON bu.id = po.buyer_id
+     JOIN users su ON su.id = po.supplier_id
+     LEFT JOIN businesses bb ON bb.owner_user_id = po.buyer_id
+     LEFT JOIN businesses sb ON sb.owner_user_id = po.supplier_id
      WHERE i.id = ? ${ownerFilter} LIMIT 1`,
     params,
   );

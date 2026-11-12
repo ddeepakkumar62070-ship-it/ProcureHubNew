@@ -7,13 +7,18 @@ import BusinessProfilePage from './pages/BusinessProfilePage';
 import ProductsPage from './pages/ProductsPage';
 import RequestsPage from './pages/RequestsPage';
 import OrdersPage from './pages/OrdersPage';
+import OrderDetailsPage from './pages/OrderDetailsPage';
 import InvoicesPage from './pages/InvoicesPage';
 import NotificationsPage from './pages/NotificationsPage';
+import ReturnsPage from './pages/ReturnsPage';
+import ComplaintsPage from './pages/ComplaintsPage';
+import RefundsPage from './pages/RefundsPage';
 import { useAuth } from './context/AuthContext';
 
 const ProtectedRoute = ({ children }) => {
-  const { user } = useAuth();
+  const { user, authReady } = useAuth();
 
+  if (!authReady) return <div className="loading-state">Checking your session…</div>;
   if (!user) {
     return <Navigate to="/login" replace />;
   }
@@ -41,10 +46,14 @@ export default function App() {
         ['/requests', RequestsPage],
         ['/orders', OrdersPage],
         ['/invoices', InvoicesPage],
+        ['/returns', ReturnsPage],
+        ['/complaints', ComplaintsPage],
+        ['/refunds', RefundsPage],
         ['/notifications', NotificationsPage],
       ].map(([path, Page]) => (
         <Route key={path} path={path} element={<ProtectedRoute><Page /></ProtectedRoute>} />
       ))}
+      <Route path="/orders/:orderId" element={<ProtectedRoute><OrderDetailsPage /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

@@ -248,7 +248,9 @@ export default function DashboardPage() {
   return (
     <div className="page-shell dashboard-shell">
       <nav className="topbar">
-        <div className="brand">ProcureHub</div>
+        <Link className="brand" to="/" aria-label="ProcureHub home">
+          <img className="brand-logo" src="/procurehub-logo.png" alt="ProcureHub" />
+        </Link>
         <div className="nav-actions">
           <span className="user-pill">{user.role}</span>
           <button className="secondary-btn" onClick={handleLogout}>Logout</button>
@@ -267,6 +269,7 @@ export default function DashboardPage() {
         <Link to="/requests">Requests &amp; quotations</Link>
         <Link to="/orders">Orders</Link>
         <Link to="/invoices">Invoices</Link>
+        <Link to="/complaints">Complaints</Link>
         <Link to="/notifications">Notifications</Link>
       </nav>
 

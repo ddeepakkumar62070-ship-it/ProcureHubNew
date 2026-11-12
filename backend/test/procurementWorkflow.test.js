@@ -31,6 +31,9 @@ let auditSupplierPassword;
 let initialNotificationId = 0;
 let buyerProfile;
 const notificationIds = [];
+const returnIds = [];
+const complaintIds = [];
+const additionalRequestIds = [];
 const requestTitle = `ProcureHub integration test ${randomUUID()}`;
 
 async function request(path, { method = 'GET', token, body, headers = {} } = {}) {
@@ -110,7 +113,13 @@ before(async () => {
   const [auditBuyer, auditSupplier] = await Promise.all([
     request('/auth/register', {
       method: 'POST',
-      body: { name: 'Temporary Audit Buyer', email: auditBuyerEmail, password: auditBuyerPassword, role: 'BUYER' },
+      body: {
+        name: 'Temporary Audit Buyer',
+        email: auditBuyerEmail,
+        password: auditBuyerPassword,
+        role: 'BUYER',
+        businessName: '',
+      },
     }),
     request('/auth/register', {
       method: 'POST',
@@ -139,6 +148,53 @@ after(async () => {
         [supplierId, acceptedMessage, initialNotificationId],
       );
       notificationIds.push(...acceptedNotifications.map((row) => row.id));
+      for (const complaintId of complaintIds) {
+        const [complaintNotifications] = await connection.execute(
+          `SELECT id FROM notifications
+           WHERE type = 'COMPLAINT' AND message LIKE ? AND id > ?`,
+          [`Complaint #${complaintId} %`, initialNotificationId],
+        );
+        notificationIds.push(...complaintNotifications.map((row) => row.id));
+      }
+      for (const returnId of returnIds) {
+        const [returnNotifications] = await connection.execute(
+          `SELECT id FROM notifications
+           WHERE type = 'RETURN' AND message LIKE ? AND id > ?`,
+          [`Return request #${returnId} %`, initialNotificationId],
+        );
+        notificationIds.push(...returnNotifications.map((row) => row.id));
+      }
+      if (returnIds.length) {
+        const placeholders = returnIds.map(() => '?').join(', ');
+        const [refundIds] = await connection.execute(
+          `SELECT id FROM refunds WHERE return_request_id IN (${placeholders})`,
+          returnIds,
+        );
+        const refundPatterns = [
+          ...returnIds.map((id) => `%return request #${id}%`),
+          ...refundIds.map((refund) => `Refund #${refund.id} status changed to %`),
+        ];
+        const [refundNotifications] = await connection.execute(
+          `SELECT id FROM notifications
+           WHERE user_id IN (?, ?) AND type = 'REFUND'
+             AND id > ? AND (${refundPatterns.map(() => 'message LIKE ?').join(' OR ')})`,
+          [buyerId, supplierId, initialNotificationId, ...refundPatterns],
+        );
+        notificationIds.push(...refundNotifications.map((row) => row.id));
+        await connection.execute(
+          `DELETE FROM refund_history WHERE refund_id IN (
+             SELECT id FROM refunds WHERE return_request_id IN (${placeholders})
+           )`,
+          returnIds,
+        );
+        await connection.execute(`DELETE FROM refunds WHERE return_request_id IN (${placeholders})`, returnIds);
+        await connection.execute(
+          `DELETE FROM return_inventory_movements WHERE return_request_item_id IN (
+             SELECT id FROM return_request_items WHERE return_request_id IN (${placeholders})
+           )`,
+          returnIds,
+        );
+      }
       if (orderId) {
         const [orderStatusNotifications] = await connection.execute(
           `SELECT id FROM notifications
@@ -148,6 +204,17 @@ after(async () => {
         );
         notificationIds.push(...orderStatusNotifications.map((row) => row.id));
         await connection.execute('DELETE FROM reviews WHERE purchase_order_id = ? AND buyer_id = ?', [orderId, buyerId]);
+        if (complaintIds.length) {
+          const placeholders = complaintIds.map(() => '?').join(', ');
+          await connection.execute(`DELETE FROM complaint_history WHERE complaint_id IN (${placeholders})`, complaintIds);
+          await connection.execute(`DELETE FROM complaints WHERE id IN (${placeholders})`, complaintIds);
+        }
+        if (returnIds.length) {
+          const placeholders = returnIds.map(() => '?').join(', ');
+          await connection.execute(`DELETE FROM return_request_history WHERE return_request_id IN (${placeholders})`, returnIds);
+          await connection.execute(`DELETE FROM return_request_items WHERE return_request_id IN (${placeholders})`, returnIds);
+          await connection.execute(`DELETE FROM return_requests WHERE id IN (${placeholders})`, returnIds);
+        }
         if (invoiceId) {
           await connection.execute('DELETE FROM payments WHERE invoice_id = ?', [invoiceId]);
           await connection.execute('DELETE FROM invoice_items WHERE invoice_id = ?', [invoiceId]);
@@ -160,6 +227,11 @@ after(async () => {
           'DELETE FROM purchase_orders WHERE id = ? AND buyer_id = ? AND supplier_id = ?',
           [orderId, buyerId, supplierId],
         );
+      }
+      if (additionalRequestIds.length) {
+        const placeholders = additionalRequestIds.map(() => '?').join(', ');
+        await connection.execute(`DELETE FROM purchase_request_items WHERE purchase_request_id IN (${placeholders})`, additionalRequestIds);
+        await connection.execute(`DELETE FROM purchase_requests WHERE id IN (${placeholders}) AND buyer_id = ?`, [...additionalRequestIds, buyerId]);
       }
       if (notificationIds.length) {
         const placeholders = notificationIds.map(() => '?').join(', ');
@@ -367,6 +439,28 @@ test('persists a buyer-to-supplier procurement workflow through review', async (
   const orderResponse = orderResponses.find((result) => result.status === 201).data;
   orderId = orderResponse.order.id;
   assert.equal(orderResponse.order.status, 'PO_CREATED');
+  const [awardedRequest] = await getPool().execute(
+    'SELECT status FROM purchase_requests WHERE id = ? AND buyer_id = ?',
+    [requestId, buyerId],
+  );
+  assert.equal(awardedRequest[0].status, 'AWARDED');
+  const lateQuotationChange = await rawRequest(`/quotations/${quotationId}`, {
+    method: 'PATCH',
+    token: buyerToken,
+    body: { status: 'REJECTED' },
+  });
+  assert.equal(lateQuotationChange.status, 409, 'Awarded requests must reject further quote decisions.');
+  const secondRequest = await request('/purchase-requests', {
+    method: 'POST',
+    token: buyerToken,
+    body: {
+      title: `Independent open request ${randomUUID()}`,
+      category: 'Groceries',
+      items: [{ name: 'Custom audit item', quantity: 1, unit: 'each' }],
+    },
+  });
+  additionalRequestIds.push(secondRequest.request.id);
+  assert.equal(secondRequest.request.status, 'OPEN', 'A completed request must not prevent new request creation.');
   const [ordersDb] = await getPool().execute(
     'SELECT COUNT(*) AS orderCount FROM purchase_orders WHERE quotation_id = ?',
     [quotationId],
@@ -420,6 +514,15 @@ test('persists a buyer-to-supplier procurement workflow through review', async (
   const invoice = invoiceResponse.invoices.find((item) => Number(item.orderId) === Number(orderId));
   assert.ok(invoice, 'Delivery must create a persisted invoice.');
   invoiceId = invoice.id;
+  const invoicePdfResponse = await rawRequest(`/invoices/${invoiceId}/pdf`, { token: buyerToken });
+  assert.equal(invoicePdfResponse.status, 200);
+  assert.match(invoicePdfResponse.headers.get('content-type'), /application\/pdf/);
+  const invoicePdf = Buffer.from(await invoicePdfResponse.arrayBuffer());
+  assert.ok(invoicePdf.subarray(0, 5).equals(Buffer.from('%PDF-')));
+  const supplierInvoicePdf = await rawRequest(`/invoices/${invoiceId}/pdf`, { token: supplierToken });
+  assert.equal(supplierInvoicePdf.status, 200);
+  const unauthorizedInvoicePdf = await rawRequest(`/invoices/${invoiceId}/pdf`, { token: auditBuyerToken });
+  assert.equal(unauthorizedInvoicePdf.status, 404);
   const [invoiceDb] = await getPool().execute(
     'SELECT COUNT(*) AS invoiceCount, SUM(amount) AS total FROM invoices WHERE purchase_order_id = ?',
     [orderId],
@@ -511,6 +614,20 @@ test('persists a buyer-to-supplier procurement workflow through review', async (
   assert.equal(paymentAfterPaid.status, 409);
   const completedOrder = await request(`/orders/${orderId}`, { token: buyerToken });
   assert.equal(completedOrder.order.status, 'COMPLETED');
+  assert.equal(Number(completedOrder.order.id), Number(orderId));
+  assert.equal(completedOrder.order.buyerName, 'Aditi Sharma');
+  assert.ok(completedOrder.order.supplierBusinessName);
+  assert.equal(completedOrder.order.items.length, 2);
+  assert.ok(completedOrder.order.items.every((item) => item.lineTotal !== undefined));
+  assert.equal(completedOrder.order.invoice.status, 'PAID');
+  assert.ok(completedOrder.order.invoice.payments.length >= 2);
+  assert.ok(completedOrder.order.history.some((entry) => entry.newStatus === 'INVOICE_GENERATED'));
+  const supplierOrderDetails = await request(`/orders/${orderId}`, { token: supplierToken });
+  assert.equal(Number(supplierOrderDetails.order.buyerId), Number(buyerId));
+  const adminOrderDetails = await request(`/orders/${orderId}`, { token: adminToken });
+  assert.equal(Number(adminOrderDetails.order.id), Number(orderId));
+  const unrelatedOrderDetails = await rawRequest(`/orders/${orderId}`, { token: auditBuyerToken });
+  assert.equal(unrelatedOrderDetails.status, 404);
   const [completedDb] = await getPool().execute(
     `SELECT po.status AS orderStatus, i.status AS invoiceStatus,
             COUNT(DISTINCT pay.id) AS paymentCount
@@ -546,6 +663,371 @@ test('persists a buyer-to-supplier procurement workflow through review', async (
   );
   const reviewResponse = await request('/reviews', { token: supplierToken });
   assert.ok(reviewResponse.reviews.some((review) => Number(review.orderId) === Number(orderId)));
+
+  const orderItems = completedOrder.order.items;
+  const firstItemId = orderItems[0].id;
+  const oversizedReturn = await rawRequest('/returns', {
+    method: 'POST',
+    token: buyerToken,
+    body: { orderId, reason: 'Too many items', items: [{ orderItemId: firstItemId, quantity: 999 }] },
+  });
+  assert.equal(oversizedReturn.status, 409);
+  const invalidPrecisionReturn = await rawRequest('/returns', {
+    method: 'POST',
+    token: buyerToken,
+    body: { orderId, reason: 'Invalid precision', items: [{ orderItemId: firstItemId, quantity: 0.0001 }] },
+  });
+  assert.equal(invalidPrecisionReturn.status, 400);
+  const returnResponse = await request('/returns', {
+    method: 'POST',
+    token: buyerToken,
+    body: {
+      orderId,
+      reason: 'Packaging damaged',
+      description: 'One unit was damaged on arrival.',
+      items: [{ orderItemId: firstItemId, quantity: 1 }, { orderItemId: orderItems[1].id, quantity: 1 }],
+    },
+  });
+  const returnId = returnResponse.returnRequest.id;
+  returnIds.push(returnId);
+  assert.equal(returnResponse.returnRequest.status, 'RETURN_REQUESTED');
+  const [returnNotification] = await getPool().execute(
+    `SELECT COUNT(*) AS count FROM notifications
+     WHERE user_id = ? AND type = 'RETURN' AND message = ?`,
+    [supplierId, `Return request #${returnId} was submitted.`],
+  );
+  assert.equal(Number(returnNotification[0].count), 1);
+  const unrelatedReturn = await rawRequest(`/returns/${returnId}`, { token: auditBuyerToken });
+  assert.equal(unrelatedReturn.status, 404);
+  await request(`/returns/${returnId}/status`, {
+    method: 'PATCH',
+    token: supplierToken,
+    body: { status: 'RETURN_APPROVED', explanation: 'Return verified.' },
+  });
+  const pendingRefund = await request('/refunds', { token: buyerToken });
+  const refund = pendingRefund.refunds.find((item) => Number(item.returnId) === Number(returnId));
+  assert.ok(refund, 'Approving a paid return must create a visible refund record.');
+  assert.equal(Number(refund.amount), 16);
+  assert.equal(refund.status, 'REFUND_PENDING');
+  const duplicateApproval = await rawRequest(`/returns/${returnId}/status`, {
+    method: 'PATCH',
+    token: supplierToken,
+    body: { status: 'RETURN_APPROVED', explanation: 'Duplicate approval attempt.' },
+  });
+  assert.equal(duplicateApproval.status, 409);
+  const [refundCountForReturn] = await getPool().execute(
+    'SELECT COUNT(*) AS count FROM refunds WHERE return_request_id = ?',
+    [returnId],
+  );
+  assert.equal(Number(refundCountForReturn[0].count), 1);
+  const unrelatedRefund = await rawRequest(`/refunds/${refund.id}`, { token: auditBuyerToken });
+  assert.equal(unrelatedRefund.status, 404);
+  const supplierCannotProcessRefund = await rawRequest(`/refunds/${refund.id}`, {
+    method: 'PATCH',
+    token: supplierToken,
+    body: { status: 'REFUND_PROCESSED', manualTransferConfirmed: true, processedAt: new Date().toISOString() },
+  });
+  assert.equal(supplierCannotProcessRefund.status, 403);
+  const adminMustConfirmManualTransfer = await rawRequest(`/refunds/${refund.id}`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: { status: 'REFUND_PROCESSED', manualTransferConfirmed: false, processedAt: new Date().toISOString() },
+  });
+  assert.equal(adminMustConfirmManualTransfer.status, 400);
+  const refundMarkedFailed = await request(`/refunds/${refund.id}`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: { status: 'REFUND_FAILED', note: 'Manual refund could not be completed.' },
+  });
+  assert.equal(refundMarkedFailed.refund.status, 'REFUND_FAILED');
+  const [failedRefundHistory] = await getPool().execute(
+    'SELECT COUNT(*) AS count FROM refund_history WHERE refund_id = ?',
+    [refund.id],
+  );
+  assert.equal(Number(failedRefundHistory[0].count), 2);
+  await request(`/refunds/${refund.id}`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: { status: 'REFUND_PENDING', note: 'Retry after verifying recipient details.' },
+  });
+  const processedRefund = await request(`/refunds/${refund.id}`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: {
+      status: 'REFUND_PROCESSED',
+      manualTransferConfirmed: true,
+      processedAt: new Date().toISOString(),
+      transactionReference: `manual-${randomUUID()}`,
+      note: 'Manual transfer confirmed by administrator.',
+    },
+  });
+  assert.equal(processedRefund.refund.status, 'REFUND_PROCESSED');
+  assert.ok(processedRefund.refund.processedAt);
+  const duplicateRefundProcessing = await rawRequest(`/refunds/${refund.id}`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: { status: 'REFUND_PROCESSED', manualTransferConfirmed: true, processedAt: new Date().toISOString() },
+  });
+  assert.equal(duplicateRefundProcessing.status, 409);
+
+  await getPool().execute('DELETE FROM inventory WHERE product_id = ?', [productId]);
+  const failedCompletion = await rawRequest(`/returns/${returnId}/status`, {
+    method: 'PATCH',
+    token: supplierToken,
+    body: { status: 'RETURN_COMPLETED' },
+  });
+  assert.equal(failedCompletion.status, 409);
+  const [failedCompletionState] = await getPool().execute(
+    `SELECT rr.status, COUNT(m.id) AS movementCount
+     FROM return_requests rr
+     LEFT JOIN return_request_items rri ON rri.return_request_id = rr.id
+     LEFT JOIN return_inventory_movements m ON m.return_request_item_id = rri.id
+     WHERE rr.id = ? GROUP BY rr.id`,
+    [returnId],
+  );
+  assert.equal(failedCompletionState[0].status, 'RETURN_APPROVED');
+  assert.equal(Number(failedCompletionState[0].movementCount), 0);
+  await getPool().execute(
+    'INSERT INTO inventory (product_id, quantity, reserved_quantity) VALUES (?, 1, 0)',
+    [productId],
+  );
+
+  const concurrentCompletionResponses = await Promise.all([
+    rawRequest(`/returns/${returnId}/status`, {
+      method: 'PATCH',
+      token: supplierToken,
+      body: { status: 'RETURN_COMPLETED' },
+    }),
+    rawRequest(`/returns/${returnId}/status`, {
+      method: 'PATCH',
+      token: supplierToken,
+      body: { status: 'RETURN_COMPLETED' },
+    }),
+  ]);
+  const concurrentCompletionResults = await Promise.all(concurrentCompletionResponses.map(async (response) => ({
+    status: response.status,
+    body: await response.json(),
+  })));
+  assert.equal(concurrentCompletionResults.filter((result) => result.status === 200).length, 1);
+  assert.equal(concurrentCompletionResults.filter((result) => result.status === 409).length, 1);
+  assert.equal(
+    concurrentCompletionResults.find((result) => result.status === 200).body.returnRequest.status,
+    'RETURN_COMPLETED',
+  );
+  const [returnRecord] = await getPool().execute(
+    `SELECT rr.status, SUM(rri.quantity) AS quantity
+     FROM return_requests rr JOIN return_request_items rri ON rri.return_request_id = rr.id
+     WHERE rr.id = ? GROUP BY rr.id`,
+    [returnId],
+  );
+  assert.equal(returnRecord[0].status, 'RETURN_COMPLETED');
+  assert.equal(Number(returnRecord[0].quantity), 2);
+  const [inventoryAfterReturn] = await getPool().execute(
+    'SELECT quantity, reserved_quantity AS reservedQuantity FROM inventory WHERE product_id = ?',
+    [productId],
+  );
+  assert.equal(Number(inventoryAfterReturn[0].quantity), 2, 'Accepted returned quantity must be restored on completion.');
+  assert.equal(Number(inventoryAfterReturn[0].reservedQuantity), 0);
+  const [restockMovements] = await getPool().execute(
+    `SELECT COUNT(*) AS count, SUM(quantity) AS quantity
+     FROM return_inventory_movements
+     WHERE return_request_item_id IN (
+       SELECT id FROM return_request_items WHERE return_request_id = ?
+     )`,
+    [returnId],
+  );
+  assert.equal(Number(restockMovements[0].count), 2);
+  assert.equal(Number(restockMovements[0].quantity), 2);
+  const excessReturn = await rawRequest('/returns', {
+    method: 'POST',
+    token: buyerToken,
+    body: { orderId, reason: 'Excess quantity', items: [{ orderItemId: firstItemId, quantity: 2 }] },
+  });
+  assert.equal(excessReturn.status, 409, 'Completed returns must count toward the cumulative return quantity.');
+  const rejectedReturnResponse = await request('/returns', {
+    method: 'POST',
+    token: buyerToken,
+    body: { orderId, reason: 'Wrong size', items: [{ orderItemId: firstItemId, quantity: 1 }] },
+  });
+  const rejectedReturnId = rejectedReturnResponse.returnRequest.id;
+  returnIds.push(rejectedReturnId);
+  const rejectionWithoutReason = await rawRequest(`/returns/${rejectedReturnId}/status`, {
+    method: 'PATCH',
+    token: supplierToken,
+    body: { status: 'RETURN_REJECTED' },
+  });
+  assert.equal(rejectionWithoutReason.status, 400);
+  const rejectedReturn = await request(`/returns/${rejectedReturnId}/status`, {
+    method: 'PATCH',
+    token: supplierToken,
+    body: { status: 'RETURN_REJECTED', explanation: 'The item was used.' },
+  });
+  assert.equal(rejectedReturn.returnRequest.status, 'RETURN_REJECTED');
+  const [inventoryAfterRejection] = await getPool().execute(
+    'SELECT quantity FROM inventory WHERE product_id = ?',
+    [productId],
+  );
+  assert.equal(Number(inventoryAfterRejection[0].quantity), 2, 'Rejected returns must not restore inventory.');
+  const competingReturnRequests = await Promise.all([
+    rawRequest('/returns', {
+      method: 'POST',
+      token: buyerToken,
+      body: { orderId, reason: 'Concurrent return A', items: [{ orderItemId: firstItemId, quantity: 1 }] },
+    }),
+    rawRequest('/returns', {
+      method: 'POST',
+      token: buyerToken,
+      body: { orderId, reason: 'Concurrent return B', items: [{ orderItemId: firstItemId, quantity: 1 }] },
+    }),
+  ]);
+  const competingReturnResults = await Promise.all(competingReturnRequests.map(async (response) => ({
+    status: response.status,
+    body: await response.json(),
+  })));
+  assert.equal(competingReturnResults.filter((result) => result.status === 201).length, 1);
+  assert.equal(competingReturnResults.filter((result) => result.status === 409).length, 1);
+  const successfulCompetingReturn = competingReturnResults.find((result) => result.status === 201);
+  const competingReturnId = successfulCompetingReturn.body.returnRequest.id;
+  returnIds.push(competingReturnId);
+  await request(`/returns/${competingReturnId}/status`, {
+    method: 'PATCH',
+    token: supplierToken,
+    body: { status: 'RETURN_REJECTED', explanation: 'Concurrent test request rejected.' },
+  });
+  const finalReturnResponse = await request('/returns', {
+    method: 'POST',
+    token: buyerToken,
+    body: {
+      orderId,
+      reason: 'Remaining accepted quantities',
+      items: [{ orderItemId: firstItemId, quantity: 1 }, { orderItemId: orderItems[1].id, quantity: 2 }],
+    },
+  });
+  const finalReturnId = finalReturnResponse.returnRequest.id;
+  returnIds.push(finalReturnId);
+  const finalReturnApproval = await request(`/returns/${finalReturnId}/status`, {
+    method: 'PATCH',
+    token: supplierToken,
+    body: { status: 'RETURN_APPROVED', explanation: 'Remaining items inspected.' },
+  });
+  assert.equal(finalReturnApproval.returnRequest.refundStatus, 'REFUND_PENDING');
+  assert.equal(Number(finalReturnApproval.returnRequest.refundAmount), 20);
+  const secondProcessedRefund = await request(`/refunds/${finalReturnApproval.returnRequest.refundId}`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: {
+      status: 'REFUND_PROCESSED',
+      manualTransferConfirmed: true,
+      processedAt: new Date().toISOString(),
+      transactionReference: `manual-${randomUUID()}`,
+      note: 'Second partial refund manually transferred.',
+    },
+  });
+  assert.equal(secondProcessedRefund.refund.status, 'REFUND_PROCESSED');
+  const [refundTotal] = await getPool().execute(
+    `SELECT SUM(amount) AS refundAmount
+     FROM refunds WHERE invoice_id = ? AND status = 'REFUND_PROCESSED'`,
+    [invoiceId],
+  );
+  const [paidTotal] = await getPool().execute(
+    `SELECT SUM(amount) AS paidAmount
+     FROM payments WHERE invoice_id = ? AND status IN ('PAID', 'COMPLETED')`,
+    [invoiceId],
+  );
+  assert.equal(Number(refundTotal[0].refundAmount), 36);
+  assert.ok(Number(refundTotal[0].refundAmount) <= Number(paidTotal[0].paidAmount));
+  const finalReturnCompletions = await Promise.all([
+    rawRequest(`/returns/${finalReturnId}/status`, {
+      method: 'PATCH',
+      token: supplierToken,
+      body: { status: 'RETURN_COMPLETED' },
+    }),
+    rawRequest(`/returns/${finalReturnId}/status`, {
+      method: 'PATCH',
+      token: supplierToken,
+      body: { status: 'RETURN_COMPLETED' },
+    }),
+  ]);
+  const finalCompletionStatuses = await Promise.all(finalReturnCompletions.map((response) => response.status));
+  assert.deepEqual(finalCompletionStatuses.sort(), [200, 409]);
+  const [fullyRestocked] = await getPool().execute(
+    `SELECT p.id, i.quantity
+     FROM products p JOIN inventory i ON i.product_id = p.id
+     WHERE p.id IN (?, ?) ORDER BY p.id`,
+    [productId, secondProductId],
+  );
+  assert.deepEqual(fullyRestocked.map((row) => Number(row.quantity)), [3, 5]);
+
+  const complaintResponse = await request('/complaints', {
+    method: 'POST',
+    token: buyerToken,
+    body: {
+      orderId,
+      category: 'quality',
+      title: `Quality issue ${randomUUID()}`,
+      description: 'One delivered item did not meet the agreed specification.',
+    },
+  });
+  const complaintId = complaintResponse.complaint.id;
+  complaintIds.push(complaintId);
+  assert.equal(complaintResponse.complaint.status, 'OPEN');
+  const supplierComplaintView = await request(`/complaints/${complaintId}`, { token: supplierToken });
+  assert.equal(Number(supplierComplaintView.complaint.id), Number(complaintId));
+  const unrelatedComplaint = await rawRequest(`/complaints/${complaintId}`, { token: auditSupplierToken });
+  assert.equal(unrelatedComplaint.status, 404);
+  const duplicateComplaint = await rawRequest('/complaints', {
+    method: 'POST',
+    token: buyerToken,
+    body: {
+      orderId,
+      category: 'quality',
+      title: complaintResponse.complaint.title,
+      description: 'Duplicate active complaint.',
+    },
+  });
+  assert.equal(duplicateComplaint.status, 409);
+  const buyerCannotResolve = await rawRequest(`/complaints/${complaintId}/status`, {
+    method: 'PATCH',
+    token: buyerToken,
+    body: { status: 'RESOLVED' },
+  });
+  assert.equal(buyerCannotResolve.status, 403);
+  await request(`/complaints/${complaintId}/responses`, {
+    method: 'POST',
+    token: supplierToken,
+    body: { response: 'We will review the quality report.' },
+  });
+  await request(`/complaints/${complaintId}/status`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: { status: 'UNDER_REVIEW', note: 'Evidence review started.' },
+  });
+  await request(`/complaints/${complaintId}/status`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: { status: 'RESOLVED', note: 'Resolution recorded.' },
+  });
+  const closedComplaint = await request(`/complaints/${complaintId}/status`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: { status: 'CLOSED' },
+  });
+  assert.equal(closedComplaint.complaint.status, 'CLOSED');
+  assert.ok(closedComplaint.complaint.history.some((entry) => entry.action === 'RESPONSE'));
+  const responseAfterClose = await rawRequest(`/complaints/${complaintId}/responses`, {
+    method: 'POST',
+    token: buyerToken,
+    body: { response: 'This should no longer be accepted.' },
+  });
+  assert.equal(responseAfterClose.status, 409);
+  const [complaintRecord] = await getPool().execute(
+    `SELECT c.status, COUNT(h.id) AS historyCount
+     FROM complaints c JOIN complaint_history h ON h.complaint_id = c.id
+     WHERE c.id = ? GROUP BY c.id`,
+    [complaintId],
+  );
+  assert.equal(complaintRecord[0].status, 'CLOSED');
+  assert.equal(Number(complaintRecord[0].historyCount), 5);
 
   await request(`/products/${productId}`, { method: 'DELETE', token: supplierToken });
   const reactivatedProduct = await request(`/products/${productId}`, {
@@ -631,11 +1113,21 @@ test('rejects invalid and expired authentication tokens and malformed registrati
     body: { email: 'buyer@procurehub.com', password: 'incorrect-password' },
   });
   assert.equal(badLogin.status, 401);
+  const badLoginBody = await badLogin.json();
+  assert.equal(badLoginBody.message, 'Invalid email or password.');
+  const unknownAccountLogin = await rawRequest('/auth/login', {
+    method: 'POST',
+    body: { email: `unknown-${randomUUID()}@example.test`, password: 'incorrect-password' },
+  });
+  assert.equal(unknownAccountLogin.status, 401);
+  assert.equal((await unknownAccountLogin.json()).message, badLoginBody.message);
   const malformedLogin = await rawRequest('/auth/login', {
     method: 'POST',
     body: { email: { value: 'buyer@procurehub.com' }, password: 'incorrect-password' },
   });
   assert.equal(malformedLogin.status, 400);
+  const malformedLoginBody = await malformedLogin.json();
+  assert.ok(malformedLoginBody.errors.email);
   const weakRegistration = await rawRequest('/auth/register', {
     method: 'POST',
     body: { name: 'Weak Password', email: `weak-${randomUUID()}@example.test`, password: 'short', role: 'BUYER' },

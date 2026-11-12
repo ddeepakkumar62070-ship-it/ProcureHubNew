@@ -296,7 +296,8 @@ async function updateQuotationStatus({ quotationId, userId, role, status }) {
     await connection.beginTransaction();
     const [rows] = await connection.execute(
       `SELECT q.id, q.purchase_request_id AS requestId, q.supplier_id AS supplierId,
-              pr.buyer_id AS buyerId, q.status, q.valid_until AS validUntil
+              pr.buyer_id AS buyerId, pr.status AS requestStatus,
+              q.status, q.valid_until AS validUntil
        FROM quotations q
        JOIN purchase_requests pr ON pr.id = q.purchase_request_id
        WHERE q.id = ? FOR UPDATE`,
@@ -307,6 +308,10 @@ async function updateQuotationStatus({ quotationId, userId, role, status }) {
       return 'NOT_FOUND';
     }
     const quote = rows[0];
+    if (quote.requestStatus !== 'OPEN') {
+      await connection.rollback();
+      return 'REQUEST_CLOSED';
+    }
     if (quote.validUntil && new Date(quote.validUntil) <= new Date()) {
       await connection.rollback();
       return 'INVALID_STATE';
@@ -516,8 +521,15 @@ async function getOrder(orderId, { userId, role }) {
     `SELECT po.id, po.purchase_request_id AS requestId, po.quotation_id AS quotationId,
             po.buyer_id AS buyerId, po.supplier_id AS supplierId, po.total_amount AS totalAmount,
             po.currency, po.status, po.created_at AS createdAt,
-            bb.name AS buyerBusinessName, sb.name AS supplierBusinessName
+            bu.name AS buyerName, bu.role AS buyerRole,
+            bb.name AS buyerBusinessName, bb.phone AS buyerPhone, bb.address AS buyerAddress,
+            su.name AS supplierName, su.role AS supplierRole,
+            sb.name AS supplierBusinessName, sb.phone AS supplierPhone, sb.address AS supplierAddress,
+            pr.delivery_address AS deliveryAddress, pr.delivery_deadline AS deliveryDeadline
      FROM purchase_orders po
+     JOIN users bu ON bu.id = po.buyer_id
+     JOIN users su ON su.id = po.supplier_id
+     JOIN purchase_requests pr ON pr.id = po.purchase_request_id
      LEFT JOIN businesses bb ON bb.owner_user_id = po.buyer_id
      LEFT JOIN businesses sb ON sb.owner_user_id = po.supplier_id
      WHERE po.id = ? ${condition} LIMIT 1`,
@@ -526,8 +538,12 @@ async function getOrder(orderId, { userId, role }) {
   if (!rows.length) return null;
   const order = rows[0];
   const [items] = await getPool().execute(
-    `SELECT id, product_id AS productId, name, quantity, unit, unit_price AS unitPrice
-     FROM order_items WHERE purchase_order_id = ? ORDER BY id`,
+    `SELECT oi.id, oi.product_id AS productId, oi.name, p.description,
+            oi.quantity, oi.unit, oi.unit_price AS unitPrice,
+            ROUND(oi.quantity * oi.unit_price, 2) AS lineTotal
+     FROM order_items oi
+     LEFT JOIN products p ON p.id = oi.product_id
+     WHERE oi.purchase_order_id = ? ORDER BY oi.id`,
     [orderId],
   );
   const [history] = await getPool().execute(
@@ -537,7 +553,55 @@ async function getOrder(orderId, { userId, role }) {
      WHERE h.purchase_order_id = ? ORDER BY h.id`,
     [orderId],
   );
-  return { ...order, items, history };
+  const [invoices] = await getPool().execute(
+    `SELECT id, invoice_number AS invoiceNumber, amount, currency, status,
+            due_at AS dueAt, created_at AS createdAt
+     FROM invoices WHERE purchase_order_id = ? LIMIT 1`,
+    [orderId],
+  );
+  let invoice = invoices[0] || null;
+  if (invoice) {
+    const [payments] = await getPool().execute(
+      `SELECT id, amount, currency, status, reference, paid_at AS paidAt,
+              created_at AS createdAt
+       FROM payments WHERE invoice_id = ? ORDER BY created_at, id`,
+      [invoice.id],
+    );
+    invoice = { ...invoice, payments };
+  }
+  const [returns] = await getPool().execute(
+    `SELECT rr.id, rr.status, rr.reason, rr.description,
+            rr.created_at AS createdAt, rr.updated_at AS updatedAt,
+            rf.id AS refundId, rf.amount AS refundAmount, rf.currency AS refundCurrency,
+            rf.status AS refundStatus, rf.transaction_reference AS refundReference,
+            rf.processed_at AS refundProcessedAt
+     FROM return_requests rr
+     LEFT JOIN refunds rf ON rf.return_request_id = rr.id
+     WHERE rr.purchase_order_id = ? ORDER BY rr.created_at, rr.id`,
+    [orderId],
+  );
+  if (returns.length) {
+    const returnIds = returns.map((returnRequest) => returnRequest.id);
+    const placeholders = returnIds.map(() => '?').join(', ');
+    const [returnItems] = await getPool().execute(
+      `SELECT rri.return_request_id AS returnId, rri.order_item_id AS orderItemId,
+              rri.quantity, oi.name, oi.unit
+       FROM return_request_items rri
+       JOIN order_items oi ON oi.id = rri.order_item_id
+       WHERE rri.return_request_id IN (${placeholders}) ORDER BY rri.id`,
+      returnIds,
+    );
+    const returnItemsById = new Map();
+    for (const item of returnItems) {
+      const grouped = returnItemsById.get(item.returnId) || [];
+      grouped.push(item);
+      returnItemsById.set(item.returnId, grouped);
+    }
+    for (const returnRequest of returns) {
+      returnRequest.items = returnItemsById.get(returnRequest.id) || [];
+    }
+  }
+  return { ...order, items, history, invoice, returns };
 }
 
 const transitions = {

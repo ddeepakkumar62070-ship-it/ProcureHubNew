@@ -182,6 +182,7 @@ const updateQuotationStatus = async (req, res, next) => {
       status,
     });
     if (result === 'NOT_FOUND') return res.status(404).json({ message: 'Quotation not found.' });
+    if (result === 'REQUEST_CLOSED') return res.status(409).json({ message: 'This purchase request is no longer open for quotation changes.' });
     if (result === 'INVALID_STATE') return res.status(409).json({ message: 'Quotation is expired and cannot be changed.' });
     if (result === 'FORBIDDEN') {
       return res.status(403).json({ message: 'You are not allowed to update this quotation or use that status.' });

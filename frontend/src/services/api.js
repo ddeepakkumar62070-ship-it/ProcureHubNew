@@ -29,7 +29,7 @@ const resolveBaseUrl = async () => {
 resolveBaseUrl();
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('procurehub_token');
+  const token = sessionStorage.getItem('procurehub_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }

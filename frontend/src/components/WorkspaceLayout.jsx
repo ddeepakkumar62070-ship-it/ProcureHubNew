@@ -8,6 +8,7 @@ const links = [
   ['Requests & quotations', '/requests'],
   ['Orders', '/orders'],
   ['Invoices', '/invoices'],
+  ['Complaints', '/complaints'],
   ['Notifications', '/notifications'],
 ];
 
@@ -23,7 +24,9 @@ export default function WorkspaceLayout({ title, children }) {
   return (
     <div className="page-shell dashboard-shell">
       <nav className="topbar">
-        <Link className="brand" to="/dashboard">ProcureHub</Link>
+        <Link className="brand" to="/" aria-label="ProcureHub home">
+          <img className="brand-logo" src="/procurehub-logo.png" alt="ProcureHub" />
+        </Link>
         <div className="nav-actions">
           <span className="user-pill">{user?.role}</span>
           <button className="secondary-btn" onClick={signOut}>Logout</button>
