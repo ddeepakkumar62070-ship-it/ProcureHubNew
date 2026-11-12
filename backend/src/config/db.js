@@ -1,4 +1,5 @@
 const mysql = require('mysql2/promise');
+const fs = require('node:fs');
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 
@@ -15,7 +16,7 @@ function getDatabaseConfig() {
     throw new Error('DB_PORT must be a valid TCP port number.');
   }
 
-  return {
+  const config = {
     host: process.env.DB_HOST,
     port,
     user: process.env.DB_USER,
@@ -28,6 +29,15 @@ function getDatabaseConfig() {
     enableKeepAlive: true,
     keepAliveInitialDelay: 0,
   };
+
+  if (process.env.DB_SSL?.toLowerCase() === 'true') {
+    config.ssl = { rejectUnauthorized: true };
+    if (process.env.DB_SSL_CA) {
+      config.ssl.ca = fs.readFileSync(process.env.DB_SSL_CA);
+    }
+  }
+
+  return config;
 }
 
 let pool;
