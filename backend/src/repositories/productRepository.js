@@ -1,4 +1,5 @@
 const { getPool } = require('../config/db');
+const { paginationClause } = require('../utils/pagination');
 
 const PRODUCT_SELECT = `
   SELECT p.id, p.supplier_id AS supplierId, p.name, c.name AS category,
@@ -26,10 +27,9 @@ async function list({ supplierId, search, categoryId, limit = 50, offset = 0, in
     conditions.push('p.category_id = ?');
     values.push(categoryId);
   }
-  values.push(limit, offset);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const [rows] = await getPool().execute(
-    `${PRODUCT_SELECT} ${where} ORDER BY p.created_at DESC LIMIT ? OFFSET ?`,
+    `${PRODUCT_SELECT} ${where} ORDER BY p.created_at DESC ${paginationClause(limit, offset)}`,
     values,
   );
   return rows;
@@ -193,8 +193,8 @@ async function listSupplierInventory(supplierId, { limit = 50, offset = 0 } = {}
     `SELECT i.product_id AS productId, p.name, i.quantity, i.reserved_quantity AS reservedQuantity,
             i.quantity - i.reserved_quantity AS availableQuantity
      FROM inventory i JOIN products p ON p.id = i.product_id
-     WHERE p.supplier_id = ? ORDER BY p.name LIMIT ? OFFSET ?`,
-    [supplierId, limit, offset],
+     WHERE p.supplier_id = ? ORDER BY p.name ${paginationClause(limit, offset)}`,
+    [supplierId],
   );
   return rows;
 }

@@ -1,4 +1,5 @@
 const { getPool } = require('../config/db');
+const { paginationClause } = require('../utils/pagination');
 
 const activeStatuses = ['OPEN', 'UNDER_REVIEW'];
 const transitions = {
@@ -44,8 +45,8 @@ async function listComplaints({ userId, role, limit = 50, offset = 0 }) {
      JOIN users cu ON cu.id = c.complainant_id
      LEFT JOIN users ru ON ru.id = c.respondent_id
      WHERE 1 = 1 ${access.sql}
-     ORDER BY c.updated_at DESC, c.id DESC LIMIT ? OFFSET ?`,
-    [...access.params, limit, offset],
+     ORDER BY c.updated_at DESC, c.id DESC ${paginationClause(limit, offset)}`,
+    access.params,
   );
   return rows;
 }

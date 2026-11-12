@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { after, before, test } = require('node:test');
 const { getAllowedOrigins } = require('../src/config/cors');
-const { app } = require('../src/server');
+const { app, configureProxyTrust } = require('../src/server');
 
 let server;
 let apiBase;
@@ -82,4 +82,42 @@ test('limits login and registration attempts with HTTP 429 responses', async () 
     else assert.equal(response.status, 400);
   }
   assert.equal(registration429Count, 1);
+});
+
+test('trusts one proxy hop only in production or on Render', () => {
+  configureProxyTrust(app, { NODE_ENV: 'development' });
+  assert.equal(app.get('trust proxy'), false);
+
+  configureProxyTrust(app, { NODE_ENV: 'test', RENDER: 'true' });
+  assert.equal(app.get('trust proxy'), 1);
+
+  configureProxyTrust(app, { NODE_ENV: 'production' });
+  assert.equal(app.get('trust proxy'), 1);
+
+  configureProxyTrust(app, { NODE_ENV: 'test' });
+  assert.equal(app.get('trust proxy'), false);
+  configureProxyTrust(app);
+});
+
+test('enforces login rate limits by forwarded client IP behind one trusted proxy hop', async () => {
+  const originalTrustProxy = app.get('trust proxy');
+  configureProxyTrust(app, { NODE_ENV: 'test', RENDER: 'true' });
+  try {
+    let rateLimited = 0;
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      const response = await fetch(`${apiBase}/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': '198.51.100.27',
+        },
+        body: JSON.stringify({}),
+      });
+      if (response.status === 429) rateLimited += 1;
+      else assert.equal(response.status, 400);
+    }
+    assert.equal(rateLimited, 1);
+  } finally {
+    app.set('trust proxy', originalTrustProxy);
+  }
 });

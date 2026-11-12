@@ -1,4 +1,5 @@
 const { getPool } = require('../config/db');
+const { limitClause, paginationClause } = require('../utils/pagination');
 
 async function create({ userId, type, message }) {
   const [result] = await getPool().execute(
@@ -32,8 +33,8 @@ async function listForUser(userId, { limit, offset }) {
   const [rows] = await getPool().execute(
     `SELECT id, type, message, read_at AS readAt, created_at AS createdAt
      FROM notifications WHERE user_id = ?
-     ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-    [userId, limit, offset],
+     ORDER BY created_at DESC ${paginationClause(limit, offset)}`,
+    [userId],
   );
   return rows;
 }
@@ -54,8 +55,8 @@ async function markRead(userId, notificationId) {
 async function recentForUser(userId, limit = 5) {
   const [rows] = await getPool().execute(
     `SELECT id, type, message, read_at AS readAt, created_at AS createdAt
-     FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
-    [userId, limit],
+     FROM notifications WHERE user_id = ? ORDER BY created_at DESC ${limitClause(limit)}`,
+    [userId],
   );
   return rows;
 }

@@ -1,4 +1,5 @@
 const { getPool } = require('../config/db');
+const { paginationClause } = require('../utils/pagination');
 
 async function invoiceAccess(invoiceId, { userId, role }) {
   let ownerFilter = '';
@@ -38,12 +39,11 @@ async function listInvoices({ userId, role, limit = 50, offset = 0 }) {
     where = 'WHERE po.supplier_id = ?';
     params.push(userId);
   }
-  params.push(limit, offset);
   const [rows] = await getPool().execute(
     `SELECT i.id, i.purchase_order_id AS orderId, i.invoice_number AS invoiceNumber,
             i.amount, i.currency, i.status, i.due_at AS dueAt, i.created_at AS createdAt
      FROM invoices i JOIN purchase_orders po ON po.id = i.purchase_order_id
-     ${where} ORDER BY i.created_at DESC LIMIT ? OFFSET ?`,
+     ${where} ORDER BY i.created_at DESC ${paginationClause(limit, offset)}`,
     params,
   );
   return rows;

@@ -1,4 +1,5 @@
 const { getPool } = require('../config/db');
+const { paginationClause } = require('../utils/pagination');
 
 async function notify(connection, userId, type, message) {
   await connection.execute(
@@ -21,7 +22,6 @@ async function listRequests({ userId, role, status, limit = 50, offset = 0 }) {
     params.push(status);
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  params.push(limit, offset);
   const [requests] = await getPool().execute(
     `SELECT pr.id, pr.buyer_id AS buyerId, pr.title, c.name AS category,
             pr.status, pr.delivery_address AS deliveryAddress,
@@ -30,7 +30,7 @@ async function listRequests({ userId, role, status, limit = 50, offset = 0 }) {
      FROM purchase_requests pr
      LEFT JOIN categories c ON c.id = pr.category_id
      ${where}
-     ORDER BY pr.created_at DESC LIMIT ? OFFSET ?`,
+     ORDER BY pr.created_at DESC ${paginationClause(limit, offset)}`,
     params,
   );
   if (!requests.length) return [];
@@ -159,7 +159,6 @@ async function listQuotations({ userId, role, limit = 50, offset = 0 }) {
     where = 'WHERE pr.buyer_id = ?';
     params.push(userId);
   }
-  params.push(limit, offset);
   const [rows] = await getPool().execute(
     `SELECT q.id, q.purchase_request_id AS requestId, q.supplier_id AS supplierId,
             b.name AS supplierName, q.amount, q.currency, q.status, q.message,
@@ -169,7 +168,7 @@ async function listQuotations({ userId, role, limit = 50, offset = 0 }) {
      JOIN purchase_requests pr ON pr.id = q.purchase_request_id
      LEFT JOIN businesses b ON b.owner_user_id = q.supplier_id
      ${where}
-     ORDER BY q.created_at DESC LIMIT ? OFFSET ?`,
+     ORDER BY q.created_at DESC ${paginationClause(limit, offset)}`,
     params,
   );
   for (const quotation of rows) {
@@ -483,7 +482,6 @@ async function listOrders({ userId, role, limit = 50, offset = 0 }) {
     where = 'WHERE po.supplier_id = ?';
     params.push(userId);
   }
-  params.push(limit, offset);
   const [rows] = await getPool().execute(
     `SELECT po.id, po.purchase_request_id AS requestId, po.buyer_id AS buyerId,
             po.supplier_id AS supplierId, po.total_amount AS totalAmount,
@@ -493,7 +491,7 @@ async function listOrders({ userId, role, limit = 50, offset = 0 }) {
      LEFT JOIN businesses bb ON bb.owner_user_id = po.buyer_id
      LEFT JOIN businesses sb ON sb.owner_user_id = po.supplier_id
      ${where}
-     ORDER BY po.created_at DESC LIMIT ? OFFSET ?`,
+     ORDER BY po.created_at DESC ${paginationClause(limit, offset)}`,
     params,
   );
   for (const order of rows) {
@@ -742,7 +740,6 @@ async function listReviews({ userId, role, limit = 50, offset = 0 }) {
     where = 'WHERE r.supplier_id = ?';
     params.push(userId);
   }
-  params.push(limit, offset);
   const [rows] = await getPool().execute(
     `SELECT r.id, r.purchase_order_id AS orderId, r.buyer_id AS buyerId,
             r.supplier_id AS supplierId, r.rating, r.comment, r.created_at AS createdAt,
@@ -751,7 +748,7 @@ async function listReviews({ userId, role, limit = 50, offset = 0 }) {
      LEFT JOIN businesses bb ON bb.owner_user_id = r.buyer_id
      LEFT JOIN businesses sb ON sb.owner_user_id = r.supplier_id
      ${where}
-     ORDER BY r.created_at DESC LIMIT ? OFFSET ?`,
+     ORDER BY r.created_at DESC ${paginationClause(limit, offset)}`,
     params,
   );
   return rows;

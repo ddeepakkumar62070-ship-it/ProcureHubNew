@@ -1,4 +1,5 @@
 const { getPool } = require('../config/db');
+const { paginationClause } = require('../utils/pagination');
 
 async function findOwnedByUserId(userId) {
   const [rows] = await getPool().execute(
@@ -51,8 +52,8 @@ async function listAll({ limit, offset }) {
             b.description, b.website, b.tax_identifier AS taxIdentifier,
             b.created_at AS createdAt
      FROM businesses b JOIN users u ON u.id = b.owner_user_id
-     ORDER BY b.created_at DESC LIMIT ? OFFSET ?`,
-    [limit, offset],
+     ORDER BY b.created_at DESC ${paginationClause(limit, offset)}`,
+    [],
   );
   return rows;
 }

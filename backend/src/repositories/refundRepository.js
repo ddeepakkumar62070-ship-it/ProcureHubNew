@@ -1,4 +1,5 @@
 const { getPool } = require('../config/db');
+const { paginationClause } = require('../utils/pagination');
 
 function access(role) {
   if (role === 'ADMIN') return { clause: '', params: [] };
@@ -10,7 +11,6 @@ async function listRefunds({ userId, role, limit = 50, offset = 0 }) {
   const scope = access(role);
   const params = [...scope.params];
   if (role !== 'ADMIN') params.push(userId);
-  params.push(limit, offset);
   const [rows] = await getPool().execute(
     `SELECT rf.id, rf.return_request_id AS returnId, rf.invoice_id AS invoiceId,
             rf.amount, rf.currency, rf.status, rf.transaction_reference AS transactionReference,
@@ -25,7 +25,7 @@ async function listRefunds({ userId, role, limit = 50, offset = 0 }) {
      LEFT JOIN businesses bb ON bb.owner_user_id = po.buyer_id
      LEFT JOIN businesses sb ON sb.owner_user_id = po.supplier_id
      WHERE 1 = 1 ${scope.clause}
-     ORDER BY rf.created_at DESC, rf.id DESC LIMIT ? OFFSET ?`,
+     ORDER BY rf.created_at DESC, rf.id DESC ${paginationClause(limit, offset)}`,
     params,
   );
   return rows;

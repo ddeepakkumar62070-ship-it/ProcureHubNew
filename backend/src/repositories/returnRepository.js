@@ -1,4 +1,5 @@
 const { getPool } = require('../config/db');
+const { paginationClause } = require('../utils/pagination');
 
 async function notify(connection, userId, message) {
   await connection.execute(
@@ -60,7 +61,6 @@ async function listReturns({ userId, role, limit = 50, offset = 0 }) {
     filters.push('po.supplier_id = ?');
     params.push(userId);
   }
-  params.push(limit, offset);
   const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
   const [rows] = await getPool().execute(
     `SELECT rr.id, rr.purchase_order_id AS orderId, rr.requested_by AS requestedBy,
@@ -74,7 +74,7 @@ async function listReturns({ userId, role, limit = 50, offset = 0 }) {
      LEFT JOIN refunds rf ON rf.return_request_id = rr.id
      LEFT JOIN businesses bb ON bb.owner_user_id = po.buyer_id
      LEFT JOIN businesses sb ON sb.owner_user_id = po.supplier_id
-     ${where} ORDER BY rr.created_at DESC LIMIT ? OFFSET ?`,
+     ${where} ORDER BY rr.created_at DESC ${paginationClause(limit, offset)}`,
     params,
   );
   if (!rows.length) return [];

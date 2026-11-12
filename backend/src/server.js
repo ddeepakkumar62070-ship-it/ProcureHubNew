@@ -24,6 +24,16 @@ const app = express();
 const requestedPort = Number(process.env.PORT) || 5000;
 const allowedOrigins = getAllowedOrigins();
 
+function configureProxyTrust(application, environment = process.env) {
+  const behindRender = environment.RENDER === 'true';
+  application.set(
+    'trust proxy',
+    environment.NODE_ENV === 'production' || behindRender ? 1 : false,
+  );
+}
+
+configureProxyTrust(app);
+
 app.use((req, res, next) => {
   const origin = req.get('Origin');
   if (!origin || allowedOrigins.includes(origin)) return next();
@@ -114,4 +124,4 @@ async function startServer() {
 
 if (require.main === module) startServer();
 
-module.exports = { app, startServer };
+module.exports = { app, configureProxyTrust, startServer };
